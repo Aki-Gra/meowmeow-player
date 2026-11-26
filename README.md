@@ -18,7 +18,7 @@ Supported audio containers are `.mp3` and `.mp4`; playback depends on the codecs
 
 The project uses **Kotlin 2.2.20**, **Jetpack Compose**, **Media3**, **Android Gradle Plugin 8.11.1**, **Gradle 8.13**, **JDK 17**, Android compile SDK **36**, min SDK **26**.
 
-**GitHub Actions:** Open the **Actions** tab and run **Build Android APK**, or push a commit to `main`. The workflow builds an Android debug APK and publishes it as an artifact.
+**GitHub Actions:** Open the **Actions** tab and run **Build MeowMeow Music Player APK**, or push a commit to `main`. The workflow builds an Android debug APK and publishes it as an artifact.
 
 **Local build:** Install JDK 17, Android SDK 36, Android build-tools 36.0.0 and Gradle 8.13. Run:
 
@@ -41,6 +41,10 @@ Music files stay on the device, with no network permission. Folder access uses t
 
 ## Status
 
-The previous single-file GitHub Actions workflow successfully produced a debug APK. This repository layout exposes the same compiled source as editable files. Device-level functionality should still be tested on a real Android handset.
+The source-based GitHub Actions workflow builds a debug APK automatically for pull requests to `main` and pushes to `main`. Compilation has succeeded for the rebranded app, but real-device regression testing is still needed.
+
+**Installation note:** APKs from separate cloud debug builds currently use different signing certificates, so an older debug installation generally cannot be updated in place. For stable, upgradeable installs, configure a securely stored release signing key before distribution.
+
+Read [the pre-merge technical review](docs/APP_REVIEW.md) for verified checks, known limitations, and manual test steps.
 
 No open-source licence has been selected; all rights are reserved by default.
