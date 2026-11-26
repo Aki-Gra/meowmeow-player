@@ -2,6 +2,8 @@ name: Build MeowMeow Music Player APK
 
 on:
   push:
+    branches: [main, rebrand/meowmeow-music-player]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
