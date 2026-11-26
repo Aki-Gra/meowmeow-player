@@ -1,13 +1,13 @@
 # MeowMeow Music Player — Pre-merge Technical Review
 
 Reviewed: 26 November 2026  
-Scope: the **whole Android app** on PR #1, not only its changed files.  
+Scope: the **whole Android app** on PR #1, including subsequent playback-reliability fixes.  
 Evidence: all Kotlin application files, manifest, Gradle and CI configuration; GitHub Actions PR build #12 (success); inspection of the actual built debug APK.  
-Decision: **Rebrand PR is suitable for merge after the owner accepts the documented test limitations.** The APK is **not yet a production-quality, upgradeable release**.
+Decision: **The rebrand has passed CI, but newer playback-reliability code requires a fresh CI pass and physical-device acceptance before merge.** The APK is **not yet a production-quality, upgradeable release**.
 
 ## Verified positives
 
-- PR #1 changes product naming, launcher art and CI naming without changing `applicationId`, source packages, playback or equaliser logic.
+- PR #1 changes product naming, launcher art and CI naming without changing `applicationId`, source packages or equaliser logic. Subsequent commits improve playback restoration and error recovery.
 - PR build #12 completed `:app:assembleDebug` successfully; the branded APK artifact was published.
 - The built APK reports label **MeowMeow Music Player**, package `com.example.pocketfolderplayer`, versionName `0.1.0`, versionCode `1`, and contains the new `meowmeow_icon.webp` resource.
 - The **merged APK manifest** has no `INTERNET`, broad storage, microphone or camera permission. Media libraries add `ACCESS_NETWORK_STATE` and `WAKE_LOCK`; media playback foreground-service permissions are expected. `allowBackup=false`.
@@ -46,11 +46,11 @@ The repository contains only production code and a workflow that runs `gradle :a
 
 Reference: [Media3 background playback and controllers](https://developer.android.com/media/media3/session/background-playback).
 
-### R5 — Medium/low: position persistence is periodic
+### R5 — Addressed in PR: position restoration and error recovery
 
-`PlaybackService` persists playback every 3 seconds and on some player events. Seeking while paused followed by abrupt process termination before the next tick could lose the last seek position; the handler also keeps waking every 3 seconds when paused.
+`PlaybackService` now persists playback on seeking, transitions and pause requests, as well as its existing 3-second checkpoint. The folder store also remembers the track index, allowing a deleted track to fall forward to the next available track. `MainActivity` opens the player with the saved track paused when a previous session exists. On playback failure the service attempts subsequent tracks, respecting shuffle, Repeat Off and normal repeat playback; a damaged Repeat One track is escaped rather than retried forever. An exhausted playlist is surfaced in the UI.
 
-**Action:** persist on position discontinuity/seek and appropriate lifecycle transitions; schedule periodic writes only when necessary. This is a reliability/efficiency enhancement, not a newly introduced rebrand defect.
+**Remaining limitations:** abrupt process death can still race asynchronous preference writes; the periodic handler still runs when paused; a corrupt track may need physical-device testing to verify platform-specific Media3 recovery.
 
 ### R6 — Low: large-folder scanning and error reporting
 
@@ -78,12 +78,17 @@ Reference: [GitHub Actions secure use](https://docs.github.com/en/actions/refere
 - [ ] Verify playback, pause, seek-by-tap, drag-to-seek, previous, next, shuffle and repeat
 - [ ] Verify background playback, notification controls, lock-screen, Bluetooth and headphone unplug
 - [ ] Verify equaliser presets/manual bands on a supported device; graceful fallback on unsupported device
-- [ ] Verify last track/seek position is restored without autoplay
+- [ ] Reopen app: last track and seek position restored **paused** on the player screen; no previous session opens Folders
+- [ ] While music is already playing in background, reopen UI without pausing or interrupting it
+- [ ] Seek while paused, force-close and reopen; verify saved position is recent
+- [ ] Delete the previously selected track and reopen; verify the next track is selected, paused, with a brief notice
+- [ ] Include corrupted tracks: verify automatic skip during playback and no infinite loops when every track fails
+- [ ] Confirm Repeat Off, Repeat All, Repeat One and shuffle are respected, with safe error skipping
 - [ ] Verify empty/revoked folders and unsupported/corrupt files show useful errors
 - [ ] Test on representative Android versions, particularly newer foreground-service / storage-permission behavior
 
 ## Merge recommendation
 
-**Merge PR #1 after checking the new name/icon and accepting that the shipped artifact is a test/debug APK.** No rebrand-specific issue was identified that needs a code change before merging. Keep production signing, automated tests, controller-policy assessment and robustness improvements as separate issues/PRs to preserve the requested minimal-rebrand scope.
+**Merge PR #1 only after the latest playback-fix APK builds and the new recovery scenarios pass on a real Android device.** The rebrand itself is low risk, but the playback changes require runtime testing. Keep release signing, automated tests and controller-policy assessment as follow-ups. Long-lived signing is intentionally deferred until the owner has PC access.
 
 **This review is source/CI/APK inspection, not an on-device end-to-end test.**
