@@ -164,6 +164,7 @@ private fun MusicApp(
             if (items.isEmpty()) {
                 controller.pause()
                 controller.clearMediaItems()
+                FolderStore.clearPlayback(context)
                 error = "No MP3 or MP4 files in this folder. Subfolders aren't scanned."
             } else {
                 val mediaItems = items.map { track ->
@@ -178,7 +179,19 @@ private fun MusicApp(
                 val oldId = if (refresh) controller.currentMediaItem?.mediaId else null
                 val chosenId = savedId ?: oldId
                 val found = items.indexOfFirst { it.uri.toString() == chosenId }
-                val index = found.coerceAtLeast(0)
+                val missingTrack = chosenId != null && found < 0
+                val previousIndex = when {
+                    restore -> FolderStore.savedTrackIndex(context)
+                    refresh -> controller.currentMediaItemIndex
+                    else -> -1
+                }
+                // Deleting a track shifts the next entry into its old position.
+                // If the deleted track was last, wrap around to the first one.
+                val index = when {
+                    found >= 0 -> found
+                    missingTrack && previousIndex >= 0 -> previousIndex % items.size
+                    else -> 0
+                }
                 val position = when {
                     restore && found >= 0 -> FolderStore.savedPosition(context)
                     refresh && found >= 0 -> controller.currentPosition.coerceAtLeast(0L)
@@ -190,6 +203,9 @@ private fun MusicApp(
                 controller.prepare()
                 if (wasPlaying) controller.play()
                 playerInfo = snapshot(controller)
+                if (missingTrack) {
+                    Toast.makeText(context, "Previous song unavailable. Selected the next song.", Toast.LENGTH_SHORT).show()
+                }
             }
         } else if (autoPlay && items.isNotEmpty()) {
             controller.play()
@@ -201,7 +217,13 @@ private fun MusicApp(
         if (controller != null) {
             val lastUri = FolderStore.selected(context)
             val lastFolder = FolderStore.all(context).firstOrNull { it.uri == lastUri }
-            if (lastFolder != null) openFolder(lastFolder, autoPlay = false, restore = true)
+            // Resume only when a previous track exists, without starting playback.
+            // An already-running background session must not be paused here.
+            if (lastFolder != null &&
+                (FolderStore.savedTrack(context) != null || controller.mediaItemCount > 0)
+            ) {
+                openFolder(lastFolder, autoPlay = false, restore = true)
+            }
         }
     }
 
@@ -219,9 +241,6 @@ private fun MusicApp(
             override fun onEvents(player: Player, events: Player.Events) {
                 playerInfo = snapshot(controller)
             }
-            override fun onPlayerError(errorValue: androidx.media3.common.PlaybackException) {
-                error = "Can't play this file (${errorValue.errorCodeName}). Try the next track."
-            }
         }
         controller.addListener(listener)
         playerInfo = snapshot(controller)
@@ -236,6 +255,7 @@ private fun MusicApp(
     }
 
     val equalizer = if (controller != null) PlaybackService.active?.equalizer else null
+    val noPlayableTracks = if (controller != null) PlaybackService.active?.noPlayableTracks == true else false
     Scaffold(
         bottomBar = {
             Column {
@@ -358,28 +378,28 @@ private fun MusicApp(
                                 scrubbing = false
                             },
                             valueRange = 0f..maxPosition,
-                            enabled = controller != null && playerInfo.duration > 0
+                            enabled = controller != null && playerInfo.duration > 0 && !noPlayableTracks
                         )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(formatTime(if (scrubbing) scrubMs.toLong() else playerInfo.position), style = MaterialTheme.typography.labelMedium)
                             Text(formatTime(playerInfo.duration), style = MaterialTheme.typography.labelMedium)
                         }
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly) {
-                            IconButton(onClick = { controller?.shuffleModeEnabled = !playerInfo.shuffle }, enabled = tracks.isNotEmpty()) {
+                            IconButton(onClick = { controller?.shuffleModeEnabled = !playerInfo.shuffle }, enabled = tracks.isNotEmpty() && !noPlayableTracks) {
                                 Icon(Icons.Default.Shuffle, contentDescription = "Shuffle", tint = if (playerInfo.shuffle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             IconButton(onClick = {
                                 controller?.let { if (it.currentPosition > 3_000L) it.seekTo(0L) else it.seekToPreviousMediaItem() }
-                            }, enabled = tracks.isNotEmpty()) {
+                            }, enabled = tracks.isNotEmpty() && !noPlayableTracks) {
                                 Icon(Icons.Default.SkipPrevious, contentDescription = "Previous track", modifier = Modifier.size(32.dp))
                             }
                             FilledIconButton(onClick = {
                                 controller?.let { if (it.isPlaying) it.pause() else it.play() }
-                            }, modifier = Modifier.size(62.dp), enabled = tracks.isNotEmpty()) {
+                            }, modifier = Modifier.size(62.dp), enabled = tracks.isNotEmpty() && !noPlayableTracks) {
                                 Icon(if (playerInfo.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                     contentDescription = if (playerInfo.isPlaying) "Pause" else "Play", modifier = Modifier.size(36.dp))
                             }
-                            IconButton(onClick = { controller?.seekToNextMediaItem() }, enabled = tracks.isNotEmpty()) {
+                            IconButton(onClick = { controller?.seekToNextMediaItem() }, enabled = tracks.isNotEmpty() && !noPlayableTracks) {
                                 Icon(Icons.Default.SkipNext, contentDescription = "Next track", modifier = Modifier.size(32.dp))
                             }
                             IconButton(onClick = {
@@ -388,7 +408,7 @@ private fun MusicApp(
                                     Player.REPEAT_MODE_ONE -> Player.REPEAT_MODE_OFF
                                     else -> Player.REPEAT_MODE_ALL
                                 }
-                            }, enabled = tracks.isNotEmpty()) {
+                            }, enabled = tracks.isNotEmpty() && !noPlayableTracks) {
                                 Icon(if (playerInfo.repeat == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                                     contentDescription = when (playerInfo.repeat) {
                                         Player.REPEAT_MODE_ONE -> "Repeat one"
@@ -402,7 +422,12 @@ private fun MusicApp(
                         Spacer(Modifier.height(12.dp))
                         Text("Playlist (${tracks.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(6.dp))
-                        if (tracks.isEmpty()) Text("No supported music files found.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (tracks.isEmpty()) {
+                            Text("No supported music files found.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        } else if (noPlayableTracks) {
+                            EmptyMessage("No playable songs remain", "Refresh this folder after fixing or replacing the files.")
+                        }
+                        if (!noPlayableTracks) {
                         LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             itemsIndexed(tracks, key = { _, track -> track.uri.toString() }) { index, track ->
                                 val selected = index == playerInfo.index
@@ -416,6 +441,7 @@ private fun MusicApp(
                                     }
                                 )
                             }
+                        }
                         }
                     }
                 }
