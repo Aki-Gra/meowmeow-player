@@ -131,7 +131,11 @@ class PlaybackService : MediaSessionService() {
             val name = badItem?.mediaMetadata?.title?.toString() ?: "a song"
             val count = player.mediaItemCount
 
-            val skipRepeat = if (player.repeatMode == Player.REPEAT_MODE_OFF) {
+            // On paused restoration, search beyond the end if necessary.
+            // During active playback, Repeat Off must still stop at the end.
+            val skipRepeat = if (requestedPlayback &&
+                player.repeatMode == Player.REPEAT_MODE_OFF
+            ) {
                 Player.REPEAT_MODE_OFF
             } else {
                 Player.REPEAT_MODE_ALL
