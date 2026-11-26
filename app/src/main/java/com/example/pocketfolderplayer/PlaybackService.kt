@@ -72,8 +72,8 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                // A successfully playing track breaks a chain of playback failures.
-                if (isPlaying) failedTracks.clear()
+                // Keep failed-track history until the playlist is refreshed.
+                // Some damaged files briefly enter a playing state before failing.
                 persistPlayback()
             }
 
