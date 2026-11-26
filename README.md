@@ -1,4 +1,4 @@
-# Pocket Folder Player
+# MeowMeow Music Player
 
 A small, offline, folder-based Android music player. Select a folder and play MP3 / MP4 audio files directly from it. No catalogue import, artwork or internet connection.
 

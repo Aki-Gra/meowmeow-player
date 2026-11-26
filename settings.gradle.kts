@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "PocketFolderPlayer"
+rootProject.name = "MeowMeowMusicPlayer"
 include(":app")

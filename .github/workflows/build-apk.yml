@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build MeowMeow Music Player APK
 
 on:
   push:
@@ -37,11 +37,14 @@ jobs:
       - name: Compile APK
         run: gradle :app:assembleDebug --no-daemon
 
+      - name: Give APK a branded filename
+        run: cp app/build/outputs/apk/debug/app-debug.apk MeowMeowMusicPlayer.apk
+
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: PocketFolderPlayer.apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: MeowMeowMusicPlayer.apk
+          path: MeowMeowMusicPlayer.apk
           archive: false
           if-no-files-found: error
           retention-days: 30
