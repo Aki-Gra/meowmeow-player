@@ -91,7 +91,11 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                skipUnplayableTrack()
+                // Media3 enters STATE_IDLE immediately after this callback.
+                // Recover on the next main-loop turn, once that transition completes.
+                handler.post {
+                    if (active === this@PlaybackService) skipUnplayableTrack()
+                }
             }
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
@@ -196,7 +200,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
-        handler.removeCallbacks(savePosition)
+        handler.removeCallbacksAndMessages(null)
         persistPlayback()
         active = null
         equalizer.release()
