@@ -1,0 +1,103 @@
+name: Publish MeowMeow 1.0.2 Beta 1 release
+
+# One-time release from the already verified and signed artifact.
+# No signing secrets are exposed to this workflow.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/releases/v1.0.2-beta.1.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: meowmeow-publish-v1.0.2-beta.1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'Aki-Gra/pocket-folder-player' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TAG: v1.0.2-beta.1
+      APK: MeowMeowMusicPlayer-v1.0.2-beta.1.apk
+      SOURCE_COMMIT: 2f9078b3b2b1cc3ec08ab75c5e5a11047ee4d121
+      APK_SHA256: a34f49dd256aec1bd9cc9b0ca51bcf51e8d239fbc4d112dc5a9eafbe0f3f6242
+      CERT_SHA256: f50faf6424709d9abcbd24f3fadda2fae31922b9fa8721de3478ee291bba72c2
+    steps:
+      - name: Checkout release notes
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify this release is not already published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists. Do not overwrite an existing signing-verified release."
+            exit 1
+          fi
+
+      - name: Download previously verified signed APK
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: MeowMeowMusicPlayer-Signed.apk
+          run-id: 45988827180
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: downloaded
+
+      - name: Validate exact APK bytes and Android signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORIGINAL=downloaded/MeowMeowMusicPlayer-Signed.apk
+          test -s "$ORIGINAL"
+          printf '%s  %s\n' "$APK_SHA256" "$ORIGINAL" | sha256sum --check
+          cp "$ORIGINAL" "$APK"
+          echo "Verified the APK matches signed build #2 byte for byte."
+
+      - name: Install Android APK verification tools
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          packages: platform-tools
+
+      - name: Check signer and Android version
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;36.0.0'
+          APK_SIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APK_SIGNER" verify --verbose --print-certs "$APK" > signer-verification.txt
+          grep -F 'Verified using v2 scheme (APK Signature Scheme v2): true' signer-verification.txt
+          grep -F 'Verified using v3 scheme (APK Signature Scheme v3): true' signer-verification.txt
+          grep -F "Signer #1 certificate SHA-256 digest: $CERT_SHA256" signer-verification.txt
+          echo "APK signature and certificate match the approved signing identity."
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          "$AAPT" dump badging "$APK" | grep -m1 '^package:' | tee package.txt
+          grep -F "name='com.example.pocketfolderplayer'" package.txt
+          grep -F "versionCode='100002'" package.txt
+          grep -F "versionName='1.0.2'" package.txt
+
+      - name: Publish public beta release with signed APK attached
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" "$APK#Signed Android APK" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_COMMIT" \
+            --title 'MeowMeow Music Player 1.0.2 — Beta 1' \
+            --notes-file 'docs/releases/v1.0.2-beta.1.md' \
+            --prerelease \
+            --latest=false
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName,isPrerelease,assets
