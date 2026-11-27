@@ -41,12 +41,14 @@ The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`.
 
 Music files stay on the device, with no internet permission. Folder access uses the system picker and Android's persisted read permissions. If a saved permission expires, the app asks for the folder to be selected again. The media session accepts trusted controllers (the app itself and Android's authorised media controllers); some unrelated third-party remote apps may be unable to connect.
 
-## Status
+## Status, releases and signing
 
-The source-based GitHub Actions workflow builds a debug APK automatically for pull requests to `main` and pushes to `main`. GitHub Actions now checks playlist-decision unit tests and Android lint before creating an APK. These automated checks do not replace real-device testing of Bluetooth, corrupted files, background playback or cloud document providers.
+The rebrand and playback fixes have been merged into `main`. GitHub Actions tests each PR and produces debug builds. Application-code changes pushed or merged to `main` automatically build, test, lint, sign and publish a public **Beta** APK at [GitHub Releases](../../releases), including a matching `.sha256` checksum.
 
-**Installation note:** APKs from separate cloud debug builds currently use different signing certificates, so an older debug installation generally cannot be updated in place. For stable, upgradeable installs, configure a securely stored release signing key before distribution.
+The original release signing key and application ID remain unchanged, so newer signed versions can update older signed releases in place. Old separately signed debug APKs may require a one-time uninstall, losing saved app preferences. No private signing key is stored in Git.
 
-Read [the pre-merge technical review](docs/APP_REVIEW.md) for verified checks, known limitations, and manual test steps.
+The former one-time key generator, historical manual signer and first-beta release publisher are preserved but **disabled** in [the workflow archive](docs/workflow-archive/README.md). The active release pipeline signs on a separate runner without checking out or executing source in that job. Re-enabling an archived workflow requires a reviewed change; regenerating the key will not normally permit upgrades of existing installations.
+
+See the [automatic release runbook](docs/AUTO_RELEASES.md) and [technical review](docs/APP_REVIEW.md). Wider device testing is still needed for Bluetooth, background playback and broken/cloud-hosted files.
 
 No open-source licence has been selected; all rights are reserved by default.

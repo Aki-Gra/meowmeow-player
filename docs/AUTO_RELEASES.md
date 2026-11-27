@@ -33,10 +33,22 @@ The public releases are marked **Beta** until broader device testing is complete
 
 The third secret is the Base64 of the original **already encrypted** `.p12.gpg` file, not of the plaintext keystore. Base64 is not encryption. Keep the independent backups and passwords.
 
+## Maintenance hardening
+
+**Single release lane:** `.github/workflows/auto-release.yml` has a non-cancelling concurrency group. It serialises release runs and avoids simultaneous publishing jobs. GitHub can replace a pending intermediate run when many pushes arrive quickly; this is a *latest-change* pipeline, not a promise to release every intermediate commit.
+
+**Version and tag guard:** Before accessing secrets the signing/publishing job checks existing `v1.0.*-beta.1` Git tags, refuses tag reuse even without a Release, and requires the new Android `versionCode` and `versionName` patch to exceed the highest tagged beta. This specifically prevents old workflow reruns from publishing a downgrade. The current version scheme is for the `1.0.x` beta series; update the guard and baseline deliberately before moving to `1.1` or `2.0`.
+
+**Shareable integrity checksum:** GitHub Releases now include both the signed APK and `<APK filename>.sha256`. The signature and original signing certificate remain verified before the Release is created.
+
+**Archived workflows:** The historical key generator, manual signer and first-beta publisher have been moved from `.github/workflows/` into `docs/workflow-archive/` as inert `.yml.disabled` files. They require a reviewed PR and explicit restoration to become runnable again. **Do not regenerate the permanent signing key to update the app**: a new key generally cannot update earlier APKs. The active automatic signing job remains on a separate runner that does not check out source or execute Gradle.
+
+**Ignore patterns:** `.gitignore` now blocks common keystore and encrypted backup filenames; still keep backups and passwords in independent secure locations and restrict GitHub secret access.
+
 ## Old workflows
 
 - `build-apk.yml` continues running non-release debug CI, including PR tests.
-- `build-signed-apk.yml` is the historical **manual** signed-build workflow used for the first beta. Prefer **Auto-publish signed MeowMeow APK** for all future published versions; the older manual workflow has a different version-number sequence.
-- `publish-preview-release.yml` created the historical v1.0.2 Beta 1 and does not publish new versions.
+- `build-signed-apk.yml` was a historical manual signed-build workflow with a separate version sequence and is now archived/disabled.
+- `publish-preview-release.yml` created the historical v1.0.2 Beta 1 and is now archived/disabled.
 
 No signing key or secret is committed to the repository.
