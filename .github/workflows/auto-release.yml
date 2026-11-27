@@ -1,0 +1,219 @@
+name: Auto-publish signed MeowMeow APK
+
+# Publish an installable APK whenever application code reaches main.
+# Documentation/workflow-only changes do not create a new app version.
+# Never run signing with a pull_request event.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+    steps:
+      - name: Checkout main source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate MeowMeow source and choose an upgrade-safe version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This prevents publishing the old Pocket Folder Player look.
+          grep -Fq 'android:label="MeowMeow Music Player"' app/src/main/AndroidManifest.xml
+          grep -Fq 'meowReleaseVersionCode' app/build.gradle.kts
+          # The previous public signed beta has versionCode=100002 and versionName=1.0.2.
+          # This workflow's unique run_number starts at 1, even after failed runs.
+          CODE=$((100002 + GITHUB_RUN_NUMBER))
+          NAME="1.0.$((2 + GITHUB_RUN_NUMBER))"
+          echo "version_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Releasing $NAME (versionCode $CODE) from $GITHUB_SHA"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          packages: platform-tools
+
+      - name: Install Android platform
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+        with:
+          gradle-version: '8.13'
+
+      - name: Run tests and lint, then compile unsigned release
+        shell: bash
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          gradle :app:testDebugUnitTest :app:lintDebug :app:assembleRelease \
+            -PmeowReleaseVersionCode="$VERSION_CODE" \
+            -PmeowReleaseVersionName="$VERSION_NAME" --no-daemon
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Transfer unsigned APK to isolated signing job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: meowmeow-unsigned-release
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          archive: true
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      VERSION_NAME: ${{ needs.build.outputs.version_name }}
+      VERSION_CODE: ${{ needs.build.outputs.version_code }}
+      SIGNER_CERT_SHA256: f50faf6424709d9abcbd24f3fadda2fae31922b9fa8721de3478ee291bba72c2
+      ENCRYPTED_BACKUP_SHA256: 51f928d6c82a4ddb1c72f23dfbc66b35ce8cfe4653ca3ed7d3e1ab5f953fd592
+    steps:
+      # No source checkout or Gradle execution after signing secrets are provided.
+      - name: Download build result (normal ZIP-format artifact)
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: meowmeow-unsigned-release
+          path: unsigned
+
+      - name: Set up Java 17 for keystore verification
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android signing tools
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          packages: platform-tools
+
+      - name: Install Android build tools
+        run: sdkmanager 'build-tools;36.0.0'
+
+      - name: Sign APK with original key and verify version and signer
+        id: sign
+        shell: bash
+        env:
+          MM_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          MM_BACKUP_PASSPHRASE: ${{ secrets.SIGNING_BACKUP_PASSPHRASE }}
+          MM_ENCRYPTED_KEY_BASE64: ${{ secrets.SIGNING_ENCRYPTED_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$MM_STORE_PASSWORD"
+          test -n "$MM_BACKUP_PASSPHRASE"
+          test -n "$MM_ENCRYPTED_KEY_BASE64"
+
+          ENCRYPTED="$RUNNER_TEMP/meowmeow-release.p12.gpg"
+          KEYSTORE="$RUNNER_TEMP/meowmeow-release.p12"
+          ALIGNED="$RUNNER_TEMP/meowmeow-unsigned-aligned.apk"
+          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          APK="MeowMeowMusicPlayer-v${VERSION_NAME}-beta.1.apk"
+          trap 'rm -f "$ENCRYPTED" "$KEYSTORE" "$ALIGNED"' EXIT
+          test -s unsigned/app-release-unsigned.apk
+          printf '%s' "$MM_ENCRYPTED_KEY_BASE64" | base64 --decode > "$ENCRYPTED"
+          printf '%s  %s\n' "$ENCRYPTED_BACKUP_SHA256" "$ENCRYPTED" | sha256sum --check
+
+          gpg --batch --yes --pinentry-mode loopback \
+            --decrypt --passphrase-fd 3 --output "$KEYSTORE" "$ENCRYPTED" \
+            3<<<"$MM_BACKUP_PASSPHRASE"
+          keytool -list -alias meowmeow-release -storetype PKCS12 \
+            -keystore "$KEYSTORE" -storepass:env MM_STORE_PASSWORD >/dev/null
+
+          "$TOOLS/zipalign" -f -p 4 unsigned/app-release-unsigned.apk "$ALIGNED"
+          "$TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" --ks-type PKCS12 --ks-key-alias meowmeow-release \
+            --ks-pass env:MM_STORE_PASSWORD --key-pass env:MM_STORE_PASSWORD \
+            --out "$APK" "$ALIGNED"
+          "$TOOLS/apksigner" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/signature.txt"
+          grep -F 'Verified using v2 scheme (APK Signature Scheme v2): true' "$RUNNER_TEMP/signature.txt"
+          grep -F 'Verified using v3 scheme (APK Signature Scheme v3): true' "$RUNNER_TEMP/signature.txt"
+          grep -F "Signer #1 certificate SHA-256 digest: $SIGNER_CERT_SHA256" "$RUNNER_TEMP/signature.txt"
+          "$TOOLS/zipalign" -c 4 "$APK"
+          "$TOOLS/aapt" dump badging "$APK" | grep -m1 '^package:' > "$RUNNER_TEMP/package.txt"
+          grep -F "name='com.example.pocketfolderplayer'" "$RUNNER_TEMP/package.txt"
+          grep -F "versionCode='$VERSION_CODE'" "$RUNNER_TEMP/package.txt"
+          grep -F "versionName='$VERSION_NAME'" "$RUNNER_TEMP/package.txt"
+          sha256sum "$APK"
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Publish signed public beta release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK: ${{ steps.sign.outputs.apk }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION_NAME}-beta.1"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; refusing to overwrite a published APK."
+            exit 1
+          fi
+
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          ## MeowMeow Music Player $VERSION_NAME — Beta
+
+          **Download the signed Android APK from Assets below.** Android 8.0 or newer.
+
+          This preview was built automatically from an update to the repository's
+          `main` branch. Unit tests, Android lint, APK signature verification and
+          the signing-certificate check all passed.
+
+          **Updates:** This version is signed with the same permanent key as
+          v1.0.2 Beta 1, with a higher Android version code ($VERSION_CODE).
+          Existing permanently signed versions can normally be updated in place.
+          Older debug-signed APKs may require uninstalling first, which removes
+          saved app settings.
+
+          **Preview limitations:** On-device testing of Bluetooth controls,
+          background playback, unreadable tracks and cloud-backed folders is
+          ongoing. There is no built-in auto-update mechanism; download each new
+          APK manually from GitHub Releases.
+
+          **Build source:** $GITHUB_SHA
+          EOF
+
+          gh release create "$TAG" "$APK#Android installable APK" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "MeowMeow Music Player $VERSION_NAME — Beta" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --prerelease --latest=false
+
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName,isPrerelease,assets
