@@ -1,0 +1,98 @@
+name: Generate MeowMeow Signing Key (one-time)
+
+# Deliberately manual-only. Do not add push or pull_request triggers.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type GENERATE_NEW_SIGNING_KEY to create a NEW permanent key"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: meowmeow-signing-key-generation
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    # Secrets are used only by this workflow on the default branch.
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'GENERATE_NEW_SIGNING_KEY'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Set up Java keytool
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate, encrypt and verify keystore
+        shell: bash
+        env:
+          MM_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          MM_BACKUP_PASSPHRASE: ${{ secrets.SIGNING_BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          if [[ ${#MM_STORE_PASSWORD} -lt 16 ]]; then
+            echo "::error::SIGNING_STORE_PASSWORD is missing or shorter than 16 characters."
+            exit 1
+          fi
+          if [[ ${#MM_BACKUP_PASSPHRASE} -lt 20 ]]; then
+            echo "::error::SIGNING_BACKUP_PASSPHRASE is missing or shorter than 20 characters."
+            exit 1
+          fi
+          if [[ "$MM_STORE_PASSWORD" == "$MM_BACKUP_PASSPHRASE" ]]; then
+            echo "::error::Use different secrets for the keystore and its encrypted backup."
+            exit 1
+          fi
+          if [[ "$MM_BACKUP_PASSPHRASE" == *$'\n'* ]]; then
+            echo "::error::The backup passphrase must be a single line."
+            exit 1
+          fi
+
+          KEYSTORE="$RUNNER_TEMP/meowmeow-release.p12"
+          RESTORED="$RUNNER_TEMP/restored-test.p12"
+          ENCRYPTED="$RUNNER_TEMP/meowmeow-release.p12.gpg"
+          trap 'rm -f "$KEYSTORE" "$RESTORED"' EXIT
+
+          keytool -genkeypair -noprompt \
+            -alias meowmeow-release \
+            -keyalg RSA -keysize 3072 -validity 10000 \
+            -storetype PKCS12 -keystore "$KEYSTORE" \
+            -dname "CN=MeowMeow Music Player, OU=Android, O=MeowMeow" \
+            -storepass:env MM_STORE_PASSWORD -keypass:env MM_STORE_PASSWORD
+
+          # GPG's OpenPGP format includes an integrity-protection check.
+          # Only the encrypted file is eligible for artifact upload.
+          gpg --batch --yes --pinentry-mode loopback \
+            --symmetric --cipher-algo AES256 \
+            --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
+            --passphrase-fd 3 --output "$ENCRYPTED" "$KEYSTORE" \
+            3<<<"$MM_BACKUP_PASSPHRASE"
+
+          # Prove that the downloaded encrypted backup will decrypt to
+          # the exact same valid keystore before publishing the artifact.
+          gpg --batch --yes --pinentry-mode loopback \
+            --decrypt --passphrase-fd 3 --output "$RESTORED" "$ENCRYPTED" \
+            3<<<"$MM_BACKUP_PASSPHRASE"
+          cmp -s "$KEYSTORE" "$RESTORED"
+          keytool -list -alias meowmeow-release -storetype PKCS12 \
+            -keystore "$RESTORED" -storepass:env MM_STORE_PASSWORD >/dev/null
+
+          echo "Encrypted signing-key backup created and restore-tested."
+          echo "Download the artifact and keep TWO secure copies outside GitHub."
+          echo "WARNING: Running this workflow again creates a DIFFERENT key."
+
+      - name: Upload encrypted backup only
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: MeowMeow-ENCRYPTED-Signing-Key-Backup
+          path: ${{ runner.temp }}/meowmeow-release.p12.gpg
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
