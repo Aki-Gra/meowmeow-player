@@ -89,8 +89,13 @@ object FolderStore {
 
 object FolderScanner {
     suspend fun scan(context: Context, folder: SavedFolder): List<AudioTrack> = withContext(Dispatchers.IO) {
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(folder.uri))
-            ?: return@withContext emptyList()
+        val treeUri = Uri.parse(folder.uri)
+        val hasReadGrant = context.contentResolver.persistedUriPermissions.any {
+            it.uri == treeUri && it.isReadPermission
+        }
+        if (!hasReadGrant) throw SecurityException("Folder permission was lost. Select the folder again.")
+        val root = DocumentFile.fromTreeUri(context, treeUri)
+            ?: throw IllegalStateException("The selected folder is unavailable.")
         root.listFiles()
             .asSequence()
             .filter { it.isFile && it.canRead() }

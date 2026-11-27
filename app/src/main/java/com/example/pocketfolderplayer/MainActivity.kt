@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,7 +42,34 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     private var pickedFolder by mutableStateOf<SavedFolder?>(null)
     private var controller by mutableStateOf<MediaController?>(null)
+    private var connectionError by mutableStateOf(false)
     private var connection: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
+
+    private fun connectController() {
+        connectionError = false
+        connection?.let { MediaController.releaseFuture(it) }
+        connection = null
+        controller = null
+        val future = try {
+            val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
+            MediaController.Builder(this, token).buildAsync()
+        } catch (_: Exception) {
+            connectionError = true
+            return
+        }
+        connection = future
+        future.addListener({
+            // Ignore callbacks from a previously released connection or destroyed Activity.
+            if (connection === future && !isFinishing && !isDestroyed) {
+                try {
+                    controller = future.get()
+                    connectionError = false
+                } catch (_: Exception) {
+                    connectionError = true
+                }
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
 
     private val folderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -59,23 +87,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
-        val future = MediaController.Builder(this, token).buildAsync()
-        connection = future
-        future.addListener({
-            if (!isFinishing && !isDestroyed) {
-                try {
-                    controller = future.get()
-                } catch (_: Exception) {
-                    Toast.makeText(this, "Could not start the audio player", Toast.LENGTH_LONG).show()
-                }
-            }
-        }, ContextCompat.getMainExecutor(this))
+        connectController()
         setContent {
             val dark = isSystemInDarkTheme()
             MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
                 MusicApp(
                     controller = controller,
+                    controllerError = connectionError,
+                    onRetryController = { connectController() },
                     pickedFolder = pickedFolder,
                     onPickedHandled = { pickedFolder = null },
                     onPickFolder = { folderPicker.launch(null) }
@@ -128,6 +147,8 @@ private fun formatTime(milliseconds: Long): String {
 @Composable
 private fun MusicApp(
     controller: MediaController?,
+    controllerError: Boolean,
+    onRetryController: () -> Unit,
     pickedFolder: SavedFolder?,
     onPickedHandled: () -> Unit,
     onPickFolder: () -> Unit
@@ -187,11 +208,12 @@ private fun MusicApp(
                 }
                 // Deleting a track shifts the next entry into its old position.
                 // If the deleted track was last, wrap around to the first one.
-                val index = when {
-                    found >= 0 -> found
-                    missingTrack && previousIndex >= 0 -> previousIndex % items.size
-                    else -> 0
-                }
+                val index = PlaybackDecisions.restoreIndex(
+                    playlistSize = items.size,
+                    foundIndex = found,
+                    savedTrackMissing = missingTrack,
+                    previousIndex = previousIndex
+                )
                 val position = when {
                     restore && found >= 0 -> FolderStore.savedPosition(context)
                     refresh && found >= 0 -> controller.currentPosition.coerceAtLeast(0L)
@@ -315,7 +337,16 @@ private fun MusicApp(
                     }
                     Text("One folder, one playlist. Only MP3 and MP4 files directly inside each folder.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(18.dp))
-                    if (controller == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    if (controller == null) {
+                        if (controllerError) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Unable to connect to the audio player.")
+                                Button(onClick = onRetryController) { Text("Retry connection") }
+                            }
+                        } else {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                    }
                     if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
                     if (folders.isEmpty()) {
                         EmptyMessage("No music folders saved yet", "Tap Add and choose a folder containing MP3 or MP4 files.")
@@ -497,7 +528,7 @@ private fun MusicApp(
 private fun EmptyMessage(title: String, detail: String) {
     Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Icon(Icons.Default.QueueMusic, contentDescription = null, modifier = Modifier.size(52.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, modifier = Modifier.size(52.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(title, style = MaterialTheme.typography.titleMedium)
         Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
     }

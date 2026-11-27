@@ -35,8 +35,13 @@ class PlaybackService : MediaSessionService() {
     private val savePosition = object : Runnable {
         override fun run() {
             persistPlayback()
-            handler.postDelayed(this, 3_000L)
+            if (player.isPlaying) handler.postDelayed(this, 3_000L)
         }
+    }
+
+    private fun updatePositionCheckpoint(isPlaying: Boolean) {
+        handler.removeCallbacks(savePosition)
+        if (isPlaying) handler.postDelayed(savePosition, 3_000L)
     }
 
     companion object {
@@ -72,8 +77,8 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                // Keep failed-track history until the playlist is refreshed.
-                // Some damaged files briefly enter a playing state before failing.
+                // Checkpoint periodically only while playing; keep failed-track history.
+                updatePositionCheckpoint(isPlaying)
                 persistPlayback()
             }
 
@@ -115,7 +120,6 @@ class PlaybackService : MediaSessionService() {
             .setSessionActivity(pendingIntent)
             .build()
         active = this
-        handler.postDelayed(savePosition, 3_000L)
     }
 
     /**
@@ -145,21 +149,17 @@ class PlaybackService : MediaSessionService() {
                 Player.REPEAT_MODE_ALL
             }
             val timeline = player.currentTimeline
-            var next = if (badIndex in 0 until count) {
-                timeline.getNextWindowIndex(badIndex, skipRepeat, player.shuffleModeEnabled)
-            } else {
-                C.INDEX_UNSET
-            }
-            var inspected = 0
-            while (next != C.INDEX_UNSET && inspected < count) {
-                val item = player.getMediaItemAt(next)
-                val id = item.mediaId.ifEmpty { "index:$next" }
-                if (id !in failedTracks) break
-                next = timeline.getNextWindowIndex(next, skipRepeat, player.shuffleModeEnabled)
-                inspected++
-            }
+            val next = PlaybackDecisions.nextPlayableIndex(
+                currentIndex = badIndex,
+                playlistSize = count,
+                nextIndex = { i -> timeline.getNextWindowIndex(i, skipRepeat, player.shuffleModeEnabled) },
+                isFailed = { i ->
+                    val item = player.getMediaItemAt(i)
+                    item.mediaId.ifEmpty { "index:$i" } in failedTracks
+                }
+            )
 
-            if (next == C.INDEX_UNSET || inspected >= count || failedTracks.size >= count) {
+            if (next == C.INDEX_UNSET || failedTracks.size >= count) {
                 val allFailed = count > 0 && failedTracks.size >= count
                 player.stop()
                 noPlayableTracks = allFailed
@@ -193,7 +193,10 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    // Limit playback control to this app, Android system controllers and trusted media clients.
+    // This retains the lock-screen, notification and Bluetooth system controls.
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
+        if (controllerInfo.isTrusted) session else null
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!player.isPlaying) stopSelf()
