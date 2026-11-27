@@ -12,8 +12,10 @@ android {
         applicationId = "com.example.pocketfolderplayer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Signed workflow passes monotonically increasing release versions.
+        // Ordinary debug CI builds preserve their existing version values.
+        versionCode = providers.gradleProperty("meowReleaseVersionCode").orNull?.toInt() ?: 1
+        versionName = providers.gradleProperty("meowReleaseVersionName").orNull ?: "0.1.0"
     }
 
     buildTypes {
