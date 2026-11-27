@@ -16,6 +16,12 @@ on:
       - 'gradlew.bat'
   workflow_dispatch:
 
+# Serialise releases, never cancel a running signing job. GitHub may replace
+# pending intermediate runs during rapid pushes.
+concurrency:
+  group: meowmeow-auto-release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -104,6 +110,45 @@ jobs:
       SIGNER_CERT_SHA256: f50faf6424709d9abcbd24f3fadda2fae31922b9fa8721de3478ee291bba72c2
       ENCRYPTED_BACKUP_SHA256: 51f928d6c82a4ddb1c72f23dfbc66b35ce8cfe4653ca3ed7d3e1ab5f953fd592
     steps:
+      - name: Block duplicate tags and Android version downgrades
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION_NAME}-beta.1"
+          # Tags must be checked, not only releases: a tag may exist alone.
+          ALL_TAGS="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v1.0." \
+            --jq '.[].ref')"
+          HIGHEST_PATCH=0
+          while IFS= read -r REF; do
+            if [[ "$REF" == "refs/tags/$TAG" ]]; then
+              echo "::error::Tag $TAG already exists; never reuse a release tag."
+              exit 1
+            fi
+            if [[ "$REF" =~ ^refs/tags/v1\.0\.([0-9]+)-beta\.1$ ]]; then
+              PATCH="${BASH_REMATCH[1]}"
+              if (( 10#$PATCH > HIGHEST_PATCH )); then
+                HIGHEST_PATCH=$((10#$PATCH))
+              fi
+            fi
+          done <<< "$ALL_TAGS"
+          CURRENT_PATCH="${VERSION_NAME##*.}"
+          if (( CURRENT_PATCH <= HIGHEST_PATCH )); then
+            echo "::error::Older run detected: $VERSION_NAME is not newer than tagged v1.0.$HIGHEST_PATCH. Start a NEW workflow run."
+            exit 1
+          fi
+          if (( VERSION_CODE <= 100000 + HIGHEST_PATCH )); then
+            echo "::error::Android versionCode must exceed the highest tagged release."
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists."
+            exit 1
+          fi
+          echo "Release guard passed for $TAG."
+
       # No source checkout or Gradle execution after signing secrets are provided.
       - name: Download build result (normal ZIP-format artifact)
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
@@ -169,7 +214,8 @@ jobs:
           grep -F "name='com.example.pocketfolderplayer'" "$RUNNER_TEMP/package.txt"
           grep -F "versionCode='$VERSION_CODE'" "$RUNNER_TEMP/package.txt"
           grep -F "versionName='$VERSION_NAME'" "$RUNNER_TEMP/package.txt"
-          sha256sum "$APK"
+          # Publish checksum as a separate release asset.
+          sha256sum "$APK" | tee "$APK.sha256"
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Publish signed public beta release
@@ -191,7 +237,7 @@ jobs:
           **Download the signed Android APK from Assets below.** Android 8.0 or newer.
 
           This preview was built automatically from an update to the repository's
-          `main` branch. Unit tests, Android lint, APK signature verification and
+          main branch. Unit tests, Android lint, APK signature verification and
           the signing-certificate check all passed.
 
           **Updates:** This version is signed with the same permanent key as
@@ -209,6 +255,7 @@ jobs:
           EOF
 
           gh release create "$TAG" "$APK#Android installable APK" \
+            "$APK.sha256#SHA-256 checksum" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "MeowMeow Music Player $VERSION_NAME — Beta" \
