@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - 'docs/releases/v1.0.2-beta.1.md'
+      - '.github/workflows/publish-preview-release.yml'
   workflow_dispatch:
 
 permissions:
@@ -45,23 +46,27 @@ jobs:
             exit 1
           fi
 
-      - name: Download previously verified signed APK
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
-        with:
-          name: MeowMeowMusicPlayer-Signed.apk
-          run-id: 45988827180
-          repository: ${{ github.repository }}
-          github-token: ${{ github.token }}
-          path: downloaded
+      - name: Download the signed APK from its original GitHub artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Original signed build used upload-artifact archive:false, so the
+          # GitHub artifact API returns RAW APK bytes rather than an outer ZIP.
+          # The download-artifact action expects a ZIP and cannot extract it.
+          curl --fail --silent --show-error --location --retry 3 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --output "$APK" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/15193166557/zip"
+          test -s "$APK"
 
-      - name: Validate exact APK bytes and Android signature
+      - name: Validate exact APK bytes
         shell: bash
         run: |
           set -euo pipefail
-          ORIGINAL=downloaded/MeowMeowMusicPlayer-Signed.apk
-          test -s "$ORIGINAL"
-          printf '%s  %s\n' "$APK_SHA256" "$ORIGINAL" | sha256sum --check
-          cp "$ORIGINAL" "$APK"
+          printf '%s  %s\n' "$APK_SHA256" "$APK" | sha256sum --check
           echo "Verified the APK matches signed build #2 byte for byte."
 
       - name: Install Android APK verification tools
