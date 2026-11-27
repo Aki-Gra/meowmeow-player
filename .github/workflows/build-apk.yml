@@ -43,6 +43,13 @@ jobs:
       - name: Unit tests, Android lint and APK build
         run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon
 
+      - name: Print Android lint errors if checks fail
+        if: failure()
+        run: |
+          if [ -f app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt ]; then
+            cat app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt
+          fi
+
       - name: Give APK a branded filename
         run: cp app/build/outputs/apk/debug/app-debug.apk MeowMeowMusicPlayer.apk
 

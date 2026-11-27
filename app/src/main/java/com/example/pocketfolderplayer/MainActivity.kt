@@ -38,7 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-@OptIn(UnstableApi::class)
+@UnstableApi
 class MainActivity : ComponentActivity() {
     private var pickedFolder by mutableStateOf<SavedFolder?>(null)
     private var controller by mutableStateOf<MediaController?>(null)

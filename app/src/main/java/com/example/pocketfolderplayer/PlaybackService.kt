@@ -19,7 +19,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 
 /** MediaSessionService owns playback, so music keeps playing in the background. */
-@OptIn(UnstableApi::class)
+@UnstableApi
 class PlaybackService : MediaSessionService() {
     private lateinit var player: ExoPlayer
     private var session: MediaSession? = null
