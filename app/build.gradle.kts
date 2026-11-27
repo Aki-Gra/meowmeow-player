@@ -12,8 +12,10 @@ android {
         applicationId = "com.example.pocketfolderplayer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Signed workflow passes monotonically increasing release versions.
+        // Ordinary debug CI builds preserve their existing version values.
+        versionCode = providers.gradleProperty("meowReleaseVersionCode").orNull?.toInt() ?: 1
+        versionName = providers.gradleProperty("meowReleaseVersionName").orNull ?: "0.1.0"
     }
 
     buildTypes {
@@ -26,9 +28,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
     }
@@ -36,6 +35,11 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+}
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -53,4 +57,5 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    testImplementation("junit:junit:4.13.2")
 }

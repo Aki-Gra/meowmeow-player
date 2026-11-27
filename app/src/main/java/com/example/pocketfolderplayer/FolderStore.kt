@@ -18,6 +18,7 @@ object FolderStore {
     private const val KEY_FOLDER = "selected_folder"
     private const val KEY_TRACK = "selected_track"
     private const val KEY_POSITION = "selected_position_ms"
+    private const val KEY_TRACK_INDEX = "selected_track_index"
     private const val KEY_SHUFFLE = "shuffle"
     private const val KEY_REPEAT = "repeat"
 
@@ -42,7 +43,7 @@ object FolderStore {
     fun remove(context: Context, uri: String) {
         writeFolders(context, all(context).filterNot { it.uri == uri })
         if (selected(context) == uri) {
-            prefs(context).edit().remove(KEY_FOLDER).remove(KEY_TRACK).remove(KEY_POSITION).apply()
+            prefs(context).edit().remove(KEY_FOLDER).remove(KEY_TRACK).remove(KEY_POSITION).remove(KEY_TRACK_INDEX).apply()
         }
         runCatching { context.contentResolver.releasePersistableUriPermission(Uri.parse(uri), android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
@@ -58,15 +59,17 @@ object FolderStore {
     fun selected(context: Context) = prefs(context).getString(KEY_FOLDER, null)
     fun select(context: Context, uri: String) {
         if (selected(context) != uri) {
-            prefs(context).edit().putString(KEY_FOLDER, uri).remove(KEY_TRACK).remove(KEY_POSITION).apply()
+            prefs(context).edit().putString(KEY_FOLDER, uri).remove(KEY_TRACK).remove(KEY_POSITION).remove(KEY_TRACK_INDEX).apply()
         }
     }
     fun savedTrack(context: Context) = prefs(context).getString(KEY_TRACK, null)
     fun savedPosition(context: Context) = prefs(context).getLong(KEY_POSITION, 0L)
-    fun savePlayback(context: Context, trackUri: String, positionMs: Long) {
+    fun savedTrackIndex(context: Context) = prefs(context).getInt(KEY_TRACK_INDEX, -1)
+    fun savePlayback(context: Context, trackUri: String, positionMs: Long, trackIndex: Int) {
         prefs(context).edit()
             .putString(KEY_TRACK, trackUri)
             .putLong(KEY_POSITION, positionMs.coerceAtLeast(0L))
+            .putInt(KEY_TRACK_INDEX, trackIndex.coerceAtLeast(0))
             .apply()
     }
     fun shuffleEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_SHUFFLE, false)
@@ -80,14 +83,19 @@ object FolderStore {
     }
 
     fun clearPlayback(context: Context) {
-        prefs(context).edit().remove(KEY_TRACK).remove(KEY_POSITION).apply()
+        prefs(context).edit().remove(KEY_TRACK).remove(KEY_POSITION).remove(KEY_TRACK_INDEX).apply()
     }
 }
 
 object FolderScanner {
     suspend fun scan(context: Context, folder: SavedFolder): List<AudioTrack> = withContext(Dispatchers.IO) {
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(folder.uri))
-            ?: return@withContext emptyList()
+        val treeUri = Uri.parse(folder.uri)
+        val hasReadGrant = context.contentResolver.persistedUriPermissions.any {
+            it.uri == treeUri && it.isReadPermission
+        }
+        if (!hasReadGrant) throw SecurityException("Folder permission was lost. Select the folder again.")
+        val root = DocumentFile.fromTreeUri(context, treeUri)
+            ?: throw IllegalStateException("The selected folder is unavailable.")
         root.listFiles()
             .asSequence()
             .filter { it.isFile && it.canRead() }
