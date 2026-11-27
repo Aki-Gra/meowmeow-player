@@ -1,0 +1,166 @@
+name: Build signed MeowMeow APK (manual)
+
+# A release may access signing secrets. Never trigger it for a PR or push.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Approved app source (main only after the player PR is merged)"
+        type: choice
+        options:
+          - approved-player-pr
+          - main-after-merge
+        default: approved-player-pr
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: meowmeow-signed-release
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    # Only the workflow from default branch can run, never a pull request.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout approved player source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # PR source is a REVIEWED, IMMUTABLE commit, not an editable branch name.
+          ref: ${{ inputs.source == 'approved-player-pr' && '2f9078b3b2b1cc3ec08ab75c5e5a11047ee4d121' || github.sha }}
+          persist-credentials: false
+
+      - name: Confirm supported version configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -q 'meowReleaseVersionCode' app/build.gradle.kts; then
+            echo "::error::Selected source does not support release version overrides. Use approved-player-pr until the player PR is merged."
+            exit 1
+          fi
+          echo "MM_VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "MM_VERSION_NAME=1.0.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          packages: platform-tools
+
+      - name: Install Android platform and signing tools
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+        with:
+          gradle-version: '8.13'
+
+      - name: Test, lint, and compile unsigned release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle :app:testDebugUnitTest :app:lintDebug :app:assembleRelease \
+            -PmeowReleaseVersionCode="$MM_VERSION_CODE" \
+            -PmeowReleaseVersionName="$MM_VERSION_NAME" --no-daemon
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Check for permanent encrypted backup secret
+        id: backup_source
+        shell: bash
+        env:
+          ENCRYPTED_KEY_BASE64: ${{ secrets.SIGNING_ENCRYPTED_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -n "$ENCRYPTED_KEY_BASE64" ]]; then
+            echo "permanent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "permanent=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The original artifact is temporary (expires 2026-12-04). After that,
+      # use the SIGNING_ENCRYPTED_KEYSTORE_BASE64 repository secret instead.
+      - name: Download verified encrypted key backup (temporary fallback)
+        if: steps.backup_source.outputs.permanent == 'false'
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: meowmeow-release.p12.gpg
+          run-id: 45985538206
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/signing-backup
+
+      - name: Decrypt backup, sign and verify APK
+        shell: bash
+        env:
+          MM_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          MM_BACKUP_PASSPHRASE: ${{ secrets.SIGNING_BACKUP_PASSPHRASE }}
+          ENCRYPTED_KEY_BASE64: ${{ secrets.SIGNING_ENCRYPTED_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ENCRYPTED="$RUNNER_TEMP/meowmeow-release.p12.gpg"
+          KEYSTORE="$RUNNER_TEMP/meowmeow-release.p12"
+          ALIGNED="$RUNNER_TEMP/meowmeow-unsigned-aligned.apk"
+          OUTPUT="$GITHUB_WORKSPACE/MeowMeowMusicPlayer-Signed.apk"
+          trap 'rm -f "$KEYSTORE" "$ENCRYPTED" "$ALIGNED"' EXIT
+
+          if [[ -z "$MM_STORE_PASSWORD" || -z "$MM_BACKUP_PASSPHRASE" ]]; then
+            echo "::error::The signing store password or backup passphrase is missing."
+            exit 1
+          fi
+
+          if [[ -n "$ENCRYPTED_KEY_BASE64" ]]; then
+            printf '%s' "$ENCRYPTED_KEY_BASE64" | base64 --decode > "$ENCRYPTED"
+          else
+            BACKUP="$RUNNER_TEMP/signing-backup/meowmeow-release.p12.gpg"
+            if [[ ! -s "$BACKUP" ]]; then
+              echo "::error::Original encrypted artifact is unavailable or expired. Add SIGNING_ENCRYPTED_KEYSTORE_BASE64 from your saved encrypted backup."
+              exit 1
+            fi
+            cp "$BACKUP" "$ENCRYPTED"
+          fi
+
+          # Pin the encrypted key to the original successful generation run.
+          EXPECTED_SHA256="51f928d6c82a4ddb1c72f23dfbc66b35ce8cfe4653ca3ed7d3e1ab5f953fd592"
+          if [[ "$(sha256sum "$ENCRYPTED" | cut -d ' ' -f1)" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::Encrypted backup does not match the original key-generation artifact."
+            exit 1
+          fi
+
+          gpg --batch --yes --pinentry-mode loopback \
+            --decrypt --passphrase-fd 3 --output "$KEYSTORE" "$ENCRYPTED" \
+            3<<<"$MM_BACKUP_PASSPHRASE"
+          keytool -list -alias meowmeow-release -storetype PKCS12 \
+            -keystore "$KEYSTORE" -storepass:env MM_STORE_PASSWORD >/dev/null
+
+          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          "$TOOLS/zipalign" -f -p 4 \
+            app/build/outputs/apk/release/app-release-unsigned.apk "$ALIGNED"
+          "$TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" --ks-type PKCS12 \
+            --ks-key-alias meowmeow-release \
+            --ks-pass env:MM_STORE_PASSWORD \
+            --key-pass env:MM_STORE_PASSWORD \
+            --out "$OUTPUT" "$ALIGNED"
+          "$TOOLS/apksigner" verify --verbose --print-certs "$OUTPUT"
+          "$TOOLS/zipalign" -c -v 4 "$OUTPUT"
+          echo "Signed APK version $MM_VERSION_NAME (code $MM_VERSION_CODE)"
+          sha256sum "$OUTPUT"
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: MeowMeowMusicPlayer-Signed.apk
+          path: MeowMeowMusicPlayer-Signed.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
