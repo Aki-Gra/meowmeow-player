@@ -1,0 +1,129 @@
+name: Clean old Actions history and publish fresh Beta (manual)
+
+# One-time housekeeping for the public MeowMeow Music Player repository.
+# Does NOT rewrite Git history, delete GitHub Releases, rotate signing keys,
+# or trigger from normal pushes or pull requests.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type BACKUP_SAVED_DELETE_HISTORY after saving any needed artifacts and signing-key backups outside GitHub'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: meowmeow-player-actions-history-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: github.ref == 'refs/heads/main' && github.event.repository.private == false && inputs.confirmation == 'BACKUP_SAVED_DELETE_HISTORY'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Explain what will and will not be removed
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh --version
+          echo "Deleting stored Actions artifacts and old completed workflow runs."
+          echo "Keep any signing-key backups and other needed artifacts outside GitHub."
+          echo "Git commit history, tags and published release APK assets will remain untouched."
+
+      - name: Wait for other workflow runs to finish
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            ALL_ACTIVE="$RUNNER_TEMP/all-active-runs"
+            ACTIVE="$RUNNER_TEMP/other-active-runs"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+              --jq '.workflow_runs[] | select(.status != "completed") | .id' > "$ALL_ACTIVE"
+            grep -v -x "$GITHUB_RUN_ID" "$ALL_ACTIVE" > "$ACTIVE" || true
+            if [[ ! -s "$ACTIVE" ]]; then
+              echo "No other workflows are active."
+              exit 0
+            fi
+            echo "Waiting for running/queued workflows to finish (attempt $attempt/30)."
+            sleep 20
+          done
+          echo "::error::Other runs are still active. Stop now to avoid deleting in-use artifacts."
+          exit 1
+
+      - name: Delete all old Actions artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          IDS="$RUNNER_TEMP/old-artifact-ids"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[].id' > "$IDS"
+          removed=0
+          failed=0
+          while IFS= read -r id; do
+            [[ -n "$id" ]] || continue
+            if gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" >/dev/null; then
+              removed=$((removed + 1))
+            else
+              echo "::warning::Artifact $id could not be deleted."
+              failed=$((failed + 1))
+            fi
+          done < "$IDS"
+          echo "Deleted $removed old artifacts; $failed failed."
+          if (( failed != 0 )); then
+            echo "::error::Artifact cleanup incomplete; not starting a release."
+            exit 1
+          fi
+
+      - name: Delete previous completed Actions workflow runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          IDS="$RUNNER_TEMP/completed-run-ids"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+            --jq '.workflow_runs[] | select(.status == "completed") | .id' > "$IDS"
+          removed=0
+          failed=0
+          while IFS= read -r id; do
+            [[ -n "$id" && "$id" != "$GITHUB_RUN_ID" ]] || continue
+            if gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$id" >/dev/null; then
+              removed=$((removed + 1))
+            else
+              echo "::warning::Workflow run $id could not be deleted."
+              failed=$((failed + 1))
+            fi
+          done < "$IDS"
+          echo "Deleted $removed completed workflow runs; $failed failed."
+          {
+            echo "### MeowMeow Music Player Actions cleanup"
+            echo "Removed old Actions artifacts: see the job log for counts."
+            echo "Removed completed workflow runs: $removed"
+            echo "Deletion failures: $failed"
+            echo "This cleanup run remains until deleted separately."
+            echo "Existing public GitHub Releases and Git commit history were not changed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if (( failed != 0 )); then
+            echo "::error::Run cleanup incomplete; not starting a release."
+            exit 1
+          fi
+
+      - name: Request a freshly built and signed GitHub Beta release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/auto-release.yml/dispatches" \
+            -f ref=main > /dev/null
+          {
+            echo ""
+            echo "### Signed Beta build requested"
+            echo "Triggered the existing auto-release.yml workflow on main."
+            echo "That separate workflow must pass tests, lint, signing-certificate"
+            echo "verification and tag/version checks before publishing a new Beta APK."
+            echo "New release build runs and their temporary artifacts will appear afterwards."
+          } >> "$GITHUB_STEP_SUMMARY"
